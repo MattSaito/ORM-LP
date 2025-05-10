@@ -6,10 +6,12 @@ import redis.clients.jedis.Jedis
 import redis.clients.jedis.JedisClientConfig
 import redis.clients.jedis.DefaultJedisClientConfig
 import redis.clients.jedis.HostAndPort
+import kotlin.reflect.KProperty1
+import kotlin.reflect.full.memberProperties
 
 // Para chamar os objetos criados la em entities voces precisam dar import nelas que nem User
 
-class RedisORM {
+class RedisORM (){
     private val host = HostAndPort("localhost", 6379) //porta que o redis está rodando
     private val config = DefaultJedisClientConfig.builder().build() // config padrão
     private val jedis = Jedis(host, config) //comunicação com o redis e onde tem as operações (hset,get...)
@@ -31,6 +33,29 @@ class RedisORM {
             "stock" to product.stock.toString()        //porque o redis só armazena string
         ))
     }
+
+    fun create(obj: Any){
+        val kClass = obj::class
+        val NameClass = kClass.simpleName ?: "Escondido"
+
+        //precisamos encontrar o campo de ID da classe
+
+        val idProperty = kClass.memberProperties.find { it.name == "id" }
+            ?: throw IllegalArgumentException ("Classe ${NameClass} precisa ter um id")
+
+        val id = (idProperty as KProperty1<Any, *>).get(obj)?.toString()
+            ?: throw IllegalArgumentException("id nao pode ser nulo!")
+
+        val redisKey = "$NameClass:$id"
+
+        val hash = mutableMapOf<String, String>()
+        for (prop in kClass.memberProperties) {
+            val value = (prop as KProperty1<Any, *>).get(obj)?.toString() ?: continue
+            hash[prop.name] = value
+        }
+        jedis.hset(redisKey, hash)
+    }
+
 
     fun close() {
         jedis.close()
