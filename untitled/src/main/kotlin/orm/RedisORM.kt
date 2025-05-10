@@ -102,6 +102,20 @@ class RedisORM (){
         jedis.del(key)
         jedis.hset(key,hash)
     }
+
+    fun delete (obj: Any ){
+        val kClass = obj::class
+
+        val idProperty = kClass.memberProperties.find {it.name == "id"}
+            ?: throw IllegalArgumentException("Classe precisa ter um id")
+
+        val id = (idProperty as KProperty1<Any, *>).get(obj)?.toString()
+            ?:throw IllegalArgumentException("id nao pode ser nulo!")
+
+        val key = "${kClass.simpleName}:$id"
+        jedis.del(key)
+    }
+
     fun close() {
         jedis.close()
     }

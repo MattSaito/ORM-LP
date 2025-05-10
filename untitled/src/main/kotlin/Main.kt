@@ -42,6 +42,23 @@ fun main() {
         val carregado1 = orm.read(Product::class, "product001")
         println(carregado1)
 
+        val newProduct2 = Product(
+            id = "product002",
+            name = "Feijao",
+            price = 40.0,
+            stock = 2
+        )
+
+        orm.create(newProduct2)
+
+        val carregado2 = orm.read(Product::class, id = "product002")
+        println(carregado2)
+
+        orm.delete(newProduct2)
+
+        val carregado3 = orm.read(Product::class, id = "product002")
+        println(carregado3)
+
 
     //para criar algo novo é so colocar um nome, referenciar a entidade e colocar todos os valores que foi colocado no RedisORM
     // igual em newUser e newProduct1 (nome) e User e Product(entidade)
