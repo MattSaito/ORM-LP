@@ -8,6 +8,9 @@ import redis.clients.jedis.DefaultJedisClientConfig
 import redis.clients.jedis.HostAndPort
 import kotlin.reflect.KProperty1
 import kotlin.reflect.full.memberProperties
+import kotlin.reflect.KClass
+import kotlin.reflect.full.primaryConstructor
+import kotlin.reflect.jvm.isAccessible
 
 // Para chamar os objetos criados la em entities voces precisam dar import nelas que nem User
 
@@ -34,19 +37,21 @@ class RedisORM (){
         ))
     }
 
+    // aqui utiliza-se kClass para refletir os atributos de uma classe, por meio de kClass e possivel saber
+    // nome da classe, os campos, metodos e etc... isto nos permite criar genericamente as classes no banco
     fun create(obj: Any){
         val kClass = obj::class
-        val NameClass = kClass.simpleName ?: "Escondido"
+        val nameClass = kClass.simpleName ?: "Escondido"
 
         //precisamos encontrar o campo de ID da classe
 
         val idProperty = kClass.memberProperties.find { it.name == "id" }
-            ?: throw IllegalArgumentException ("Classe ${NameClass} precisa ter um id")
+            ?: throw IllegalArgumentException ("Classe ${nameClass} precisa ter um id")
 
         val id = (idProperty as KProperty1<Any, *>).get(obj)?.toString()
             ?: throw IllegalArgumentException("id nao pode ser nulo!")
 
-        val redisKey = "$NameClass:$id"
+        val redisKey = "$nameClass:$id"
 
         val hash = mutableMapOf<String, String>()
         for (prop in kClass.memberProperties) {
@@ -56,6 +61,28 @@ class RedisORM (){
         jedis.hset(redisKey, hash)
     }
 
+    fun <T : Any > read (type : KClass<T>, id: String): T?{
+       val redisKey = "${type.simpleName}:$id"
+        val hash = jedis.hgetAll(redisKey)
+        if (hash.isEmpty()) return null
+
+        val constructor = type.primaryConstructor ?: throw IllegalArgumentException("Classe precisa de um construtor!")
+        constructor.isAccessible = true
+
+        val args = constructor.parameters.associateWith { param ->
+            val value = hash[param.name]
+            if (value != null){
+                when (param.type.classifier){
+                    Int::class -> value.toInt()
+                    Double::class -> value.toDouble()
+                    Boolean::class -> value.toBoolean()
+                    String::class -> value
+                    else -> throw IllegalArgumentException("Tipo ${param.type} nao e suportado")
+                }
+            }else null
+        }
+        return constructor.callBy(args)
+    }
 
     fun close() {
         jedis.close()
