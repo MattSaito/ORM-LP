@@ -84,6 +84,24 @@ class RedisORM (){
         return constructor.callBy(args)
     }
 
+    fun update(obj: Any){
+        val kClass = obj::class
+        //precisamos encontrar o campo de ID da classe
+        val idProperty = kClass.memberProperties.find { it.name == "id" }
+            ?: throw IllegalArgumentException ("Classe precisa ter um id")
+
+        val id = (idProperty as KProperty1<Any, *>).get(obj)?.toString()
+            ?: throw IllegalArgumentException("id nao pode ser nulo!")
+
+        val key = "${kClass.simpleName}:$id"
+        val hash = mutableMapOf<String, String>()
+
+        for (prop in kClass.memberProperties){
+            (prop as KProperty1<Any, *>).get(obj)?.let {hash[prop.name] = it.toString()}
+        }
+        jedis.del(key)
+        jedis.hset(key,hash)
+    }
     fun close() {
         jedis.close()
     }
