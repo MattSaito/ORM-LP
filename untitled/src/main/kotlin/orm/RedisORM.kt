@@ -1,5 +1,6 @@
 package orm
 
+import com.google.gson.Gson
 import entities.entities.Product
 import entities.entities.User
 import redis.clients.jedis.Jedis
@@ -12,34 +13,71 @@ import kotlin.reflect.KClass
 import kotlin.reflect.full.primaryConstructor
 import kotlin.reflect.jvm.isAccessible
 
-// Para chamar os objetos criados la em entities voces precisam dar import nelas que nem User
+//builder para create com dsl
+class GenericBuilder<T : Any>(private val kClass: KClass<T>) {
+    private val values = mutableMapOf<String, Any?>()
+
+    fun set(field: String, value: Any?) {
+        values[field] = value
+    }
+
+    fun build(): T {
+        val ctor = kClass.primaryConstructor
+            ?: throw IllegalArgumentException("Classe precisa de construtor primário")
+
+        val args = ctor.parameters.associateWith { param ->
+            values[param.name]
+        }
+
+        return ctor.callBy(args)
+    }
+}
+
+data class QueryPlan<T : Any>(
+    val typeName: String,
+    val filters: List<Pair<String, (Any?) -> Boolean>>,
+    val selectedFields: List<String>?,
+    val orderBy: Pair<String, Boolean>? // (campo, ascending)
+)
+
+
+class QueryBuilder<T : Any> {
+    private var typeName: String? = null
+    private var whereFilters: MutableList<Pair<String, (Any?) -> Boolean>> = mutableListOf()
+    private var selectedFields: List<String>? = null
+    private var orderByField : Pair<String, Boolean> ? = null
+
+
+    fun from(type: String) {
+        typeName = type
+    }
+
+    fun where(field: String, condition: (Any?) -> Boolean) {
+        whereFilters.add(field to condition)
+    }
+
+    fun select(vararg fields: String) {
+        selectedFields = fields.toList()
+    }
+
+    fun orderBy(field: String, ascending: Boolean = true ) {
+        orderByField = field to ascending
+    }
+    fun build(): QueryPlan<T> {
+        return QueryPlan(typeName!!, whereFilters, selectedFields, orderByField)
+    }
+}
+
 
 class RedisORM (){
     private val host = HostAndPort("localhost", 6379) //porta que o redis está rodando
     private val config = DefaultJedisClientConfig.builder().build() // config padrão
-    private val jedis = Jedis(host, config) //comunicação com o redis e onde tem as operações (hset,get...)
-
-    fun insertUser(user: User) {
-        jedis.hset("user:${user.id}", mapOf(
-            "id" to user.id,
-            "name" to user.name,
-            "email" to user.email,
-            "age" to user.age.toString()
-        ))
-    }
-
-    fun insertProduct(product: Product) {
-        jedis.hset("product:${product.id}", mapOf(
-            "id" to product.id,
-            "name" to product.name,
-            "price" to product.price.toString(),       //precisa converte os valores double e int para string
-            "stock" to product.stock.toString()        //porque o redis só armazena string
-        ))
-    }
+    val jedis = Jedis(host, config) //comunicação com o redis e onde tem as operações (hset,get...)
+    val gson = Gson() //precisa ser publico assim como o jedis acima esta precisando ser tambem
 
     // aqui utiliza-se kClass para refletir os atributos de uma classe, por meio de kClass e possivel saber
     // nome da classe, os campos, metodos e etc... isto nos permite criar genericamente as classes no banco
-    fun create(obj: Any){
+    fun createraw(obj: Any){
         val kClass = obj::class
         val nameClass = kClass.simpleName ?: "Escondido"
 
@@ -60,6 +98,14 @@ class RedisORM (){
         }
         jedis.hset(redisKey, hash)
     }
+
+    inline fun <reified T : Any> create(block: GenericBuilder<T>.() -> Unit) {
+        val builder = GenericBuilder(T::class)
+        builder.block()
+        val obj = builder.build()
+        createraw(obj)  
+    }
+
 
     fun <T : Any > read (type : KClass<T>, id: String): T?{
        val redisKey = "${type.simpleName}:$id"
@@ -84,7 +130,7 @@ class RedisORM (){
         return constructor.callBy(args)
     }
 
-    fun update(obj: Any){
+    fun updateraw(obj: Any){
         val kClass = obj::class
         //precisamos encontrar o campo de ID da classe
         val idProperty = kClass.memberProperties.find { it.name == "id" }
@@ -103,6 +149,30 @@ class RedisORM (){
         jedis.hset(key,hash)
     }
 
+    inline fun <reified T : Any> update(id: String, block: GenericBuilder<T>.() -> Unit) {
+        val existing = read(T::class, id)
+            ?: throw IllegalArgumentException("Objeto com id=$id não encontrado")
+
+        val kClass = T::class
+        val builder = GenericBuilder(kClass)
+
+        // Copia os campos do objeto atual para o builder
+        kClass.memberProperties.forEach { prop ->
+            val value = prop.get(existing)
+            if (value != null) builder.set(prop.name, value)
+        }
+
+        // Aplica as alterações do usuário
+        builder.block()
+
+        // Cria novo objeto atualizado
+        val updated = builder.build()
+
+        // Salva no Redis
+        updateraw(updated)
+    }
+
+
     fun delete (obj: Any ){
         val kClass = obj::class
 
@@ -115,6 +185,66 @@ class RedisORM (){
         val key = "${kClass.simpleName}:$id"
         jedis.del(key)
     }
+
+    inline fun <reified T : Any> query(block: QueryBuilder<T>.() -> Unit): List<Map<String, Any?>> {
+        val builder = QueryBuilder<T>()
+        builder.block()
+        val plan = builder.build()
+
+        //buscando chaves
+        val keys = jedis.keys("${plan.typeName}:*")
+
+        // 1. Construir a lista de objetos filtrados
+        val objs = keys.mapNotNull { key ->
+            val hash = jedis.hgetAll(key)
+            if (hash.isEmpty()) return@mapNotNull null
+
+            val json = gson.toJson(hash) // convertendo hash em json
+            val obj = gson.fromJson(json, T::class.java)
+
+            // Aplicando filtros
+            val match = plan.filters.all { (field, condition) ->
+                val value = T::class.memberProperties
+                    .find { it.name == field }
+                    ?.getter
+                    ?.call(obj)
+                condition(value)
+            }
+
+            if (!match) return@mapNotNull null
+
+            obj
+        }
+
+        // 2. Aplicar ordenação sobre os objetos
+        val sortedObjs = plan.orderBy?.let { (field, ascending) ->
+            val comparator = compareBy<T> {
+                T::class.memberProperties
+                    .find { it.name == field }
+                    ?.getter
+                    ?.call(it) as? Comparable<Any>
+            }
+
+            if (ascending) objs.sortedWith(comparator)
+            else objs.sortedWith(comparator.reversed())
+        } ?: objs
+
+        // 3. Converter para Map<String, Any?> de acordo com select
+        return sortedObjs.map { obj ->
+            if (plan.selectedFields != null) {
+                plan.selectedFields.associateWith { fieldName ->
+                    T::class.memberProperties.find { it.name == fieldName }?.getter?.call(obj)
+                }
+            } else {
+                T::class.memberProperties.associate { prop ->
+                    prop.name to prop.getter.call(obj)
+                }
+            }
+        }
+    }
+
+
+
 
     fun close() {
         jedis.close()
