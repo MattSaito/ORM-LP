@@ -17,9 +17,9 @@ data class Product(
     val price: Double,
     val stock: Int
 )
-data class Ordem (
+data class Order (
     val id: String,
     val userID: String,
-    val produtoIDs: List<Product>,
+    val produtoIDs: String,
     val total: Double
 )

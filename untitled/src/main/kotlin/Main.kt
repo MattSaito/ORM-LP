@@ -2,7 +2,7 @@
 package main
 // import das entidades
 import entities.entities.User
-import entities.entities.Ordem
+import entities.entities.Order
 import entities.entities.Product
 import orm.RedisORM
 import main.entities.*
@@ -69,6 +69,18 @@ fun main() {
         }
         println(searchprod)
 
+        orm.createraw(newOrder)
+
+        val carregado4 = orm.read(Order::class, id = "order001")
+        println(carregado4)
+
+        val searchord = orm.query<Order> {
+            select("id","userID")
+            from("Order")
+//            where("produtoIDs") {it?.toString()?.split(",")?.map {id->id.trim()}?.contains("product001") == true}
+            where("produtoIDs") {it.toString().contains("product001")}
+        }
+        println(searchord)
 
     } finally {
         orm.close()

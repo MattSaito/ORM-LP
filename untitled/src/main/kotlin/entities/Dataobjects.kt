@@ -1,6 +1,7 @@
 package main.entities
 import entities.entities.Product
 import entities.entities.User
+import entities.entities.Order
 
 val newUser = User(
     id = "user001",
@@ -21,4 +22,11 @@ val newProduct2 = Product(
     name = "Feijao",
     price = 40.0,
     stock = 2
+)
+
+val newOrder = Order(
+    id = "order001",
+    userID = "user001",
+    produtoIDs = "product001,product002",
+    total = 60.0
 )
